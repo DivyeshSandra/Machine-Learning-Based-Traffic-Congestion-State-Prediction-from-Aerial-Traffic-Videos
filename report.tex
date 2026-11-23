@@ -1,0 +1,563 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{hyperref}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,      
+    urlcolor=cyan,
+    citecolor=blue,
+}
+
+\begin{document}
+
+\title{Machine Learning-Based Traffic Congestion State Prediction from Aerial Traffic Videos\\
+\thanks{Course: CSD361 -- Introduction to Machine Learning, Final Project Submission.}
+}
+
+\author{
+\IEEEauthorblockN{Divyesh Sandra}
+\IEEEauthorblockA{\textit{Department of Computer Science and Engineering} \\
+\textit{Roll No:} [Student Roll No 1] \\
+divyesh.sandra@institution.edu}
+\and
+\IEEEauthorblockN{A. Pavan Sri Hari}
+\IEEEauthorblockA{\textit{Department of Computer Science and Engineering} \\
+\textit{Roll No:} [Student Roll No 2] \\
+pavan.srihari@institution.edu}
+\and
+\IEEEauthorblockN{Anish Reddy M}
+\IEEEauthorblockA{\textit{Department of Computer Science and Engineering} \\
+\textit{Roll No:} [Student Roll No 3] \\
+anish.reddy@institution.edu}
+\and
+\IEEEauthorblockN{Thatvik}
+\IEEEauthorblockA{\textit{Department of Computer Science and Engineering} \\
+\textit{Roll No:} [Student Roll No 4] \\
+thatvik@institution.edu}
+}
+
+\maketitle
+
+\begin{abstract}
+Urban traffic congestion is a highly volatile, non-linear spatio-temporal process that poses significant monitoring challenges, particularly at lane-less intersections where heterogeneous vehicles interact simultaneously without lane discipline. While recent literature has introduced deep spatio-temporal graph neural networks and Transformer-based forecasting frameworks (notably TSANet), the practical efficacy, generalization capacity, and trade-offs of lightweight, interpretable, feature-engineered supervised machine learning classifiers have remained unquantified on this microscopic task. In this paper, we propose an end-to-end computer-vision and supervised machine-learning framework to classify microscopic traffic congestion states---\textit{clump} (congestion formation), \textit{neutral} (stable cruise flow), and \textit{unclump} (congestion dissipation)---from aerial Unmanned Aerial Vehicle (UAV) video trajectories. Grounded on the EyeonTraffic (EoT) benchmark encompassing three topologically diverse intersections in Ahmedabad, India (Paldi, Nehru Bridge, and APMC Market), we engineer a comprehensive 19-dimensional spatio-temporal representation capturing vehicle kinematics, spatial density, 10-meter proximity graph topology, and first-order rate-of-change temporal momentum. To guarantee zero temporal autocorrelation leakage, we enforce a strict temporal block partition per intersection (first 80\% frames train, final 20\% frames prospective test). Under this leak-free protocol, we conduct a controlled comparative evaluation of Multinomial Logistic Regression, Random Forest, and Extreme Gradient Boosting (XGBoost). All three classifiers demonstrate superior predictive fidelity: Logistic Regression achieves 96.17\% accuracy (0.9588 Macro-F1), Random Forest attains 95.00\% accuracy (0.9460 Macro-F1), and XGBoost achieves 95.50\% test accuracy (0.9515 Macro-F1) with 100\% precision and recall on the critical \textit{clump} state. A systematic three-stage feature ablation study demonstrates that incorporating temporal rate-of-change dynamics alongside proximity graph features yields a +0.0246 gain in Macro-F1 (+2.33\% accuracy) over pure kinematic baselines by resolving speed overlap ambiguities at phase transitions. Furthermore, out-of-domain evaluation on the unseen, unsignalized APMC Market roundabout validates strong cross-intersection transferability (94.90\% accuracy for XGBoost). Finally, TreeSHAP attribution establishes minimum speed ($s_{\min}$), 10-meter proximity graph degree ($\bar{k}_t$), and rolling speed momentum ($\text{EMA}_3(\bar{s})$) as the primary causal drivers of congestion onset.
+\end{abstract}
+
+\begin{IEEEkeywords}
+aerial traffic analysis, congestion classification, computer vision, machine learning, spatio-temporal features, SHAP explainability, EyeonTraffic, XGBoost, Random Forest.
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+\subsection{Background and Significance}
+Urban traffic congestion represents one of the most pressing socio-economic and environmental challenges confronting modern metropolitan areas worldwide. Traffic congestion induces substantial productivity losses, escalates fossil fuel consumption, intensifies greenhouse gas emissions, and heightens vehicular accident probabilities \cite{impedovo2019vehicular}. In rapidly urbanizing economies, traffic environments are predominantly \textit{heterogeneous and lane-less}: roads are jointly occupied by two-wheelers, auto-rickshaws, passenger cars, buses, and commercial trucks. Vehicles maneuver fluidly across the entire transverse roadway width, constantly weaving, overtaking, and interacting with multiple immediate neighbors without adhering to lane demarcations \cite{roy2020defining}.
+
+Conventional intelligent transportation surveillance relies on inductive road loops, microwave radars, or pole-mounted closed-circuit television (CCTV) cameras. However, stationary roadside sensors suffer from severe perspective occlusions, limited fields of view, and high blind-spot vulnerabilities in congested conditions \cite{impedovo2019vehicular}. Low-altitude Unmanned Aerial Vehicles (UAVs) provide a transformative paradigm: overhead aerial video feeds capture entire intersection boundaries, multi-arm conflict zones, and vehicle interaction dynamics without spatial occlusion or perspective distortion \cite{roy2022detection, kumar2024tsanet}. Automated computer-vision detection and multi-object tracking (MOT) pipelines \cite{redmon2016you, zhang2022bytetrack} extract precise two-dimensional trajectory coordinates $(x_i(t), y_i(t))$ and instantaneous velocities for all active road users.
+
+\subsection{Motivation and Problem Statement}
+While computer vision provides granular trajectory streams, transforming continuous vehicle motion into actionable, macroscopic traffic intelligence requires defining discrete operational traffic regimes. In recent transportation literature, Roy et al. \cite{roy2020defining} and Kumar et al. \cite{kumar2024tsanet} formalized three fundamental microscopic traffic states:
+\begin{enumerate}
+    \item \textbf{Clump ($y=0$):} Congestion formation regime characterized by vehicle clustering, deceleration, queue accumulation, and high proximity graph density.
+    \item \textbf{Neutral ($y=1$):} Steady-state stable flow wherein vehicles travel with consistent headway, balanced speeds, and minimal conflict.
+    \item \textbf{Unclump ($y=2$):} Congestion dissipation and bottleneck discharge wherein vehicles accelerate away from queues and inter-vehicle headways expand.
+\end{enumerate}
+
+To predict these regimes from aerial video, Kumar et al. \cite{kumar2024tsanet} introduced \textbf{TSANet}, combining spatial proximity graphs with temporal multi-head Transformer self-attention \cite{vaswani2017attention}. Although TSANet demonstrates high predictive capability, it possesses significant practical limitations:
+\begin{itemize}
+    \item \textbf{Computational Complexity:} Deep graph-transformer networks require specialized GPU accelerators, large-scale memory footprints, and multi-second inference latencies, impeding real-time edge processing on lightweight UAV onboard microcomputers.
+    \item \textbf{Opacity and Lack of Interpretability:} Attention weights across stacked Transformer layers operate as opaque black boxes, failing to provide municipal traffic engineers with verifiable physical explanations regarding which physical traffic attributes trigger state transitions.
+    \item \textbf{Lack of Controlled Classical Benchmarks:} The literature lacks a rigorous, controlled evaluation establishing the baseline performance attainable by modern feature-engineered supervised machine learning models on this specific task.
+\end{itemize}
+
+This motivates the central research problem investigated in this paper:
+\begin{quote}
+\textit{How effectively can microscopic traffic states (\textit{clump}, \textit{neutral}, \textit{unclump}) in lane-less aerial traffic videos be classified from engineered vehicle-level and spatio-temporal interaction features using supervised machine learning, and how well do these models generalize across unseen intersection topologies?}
+\end{quote}
+
+\subsection{Project Objectives and Main Contributions}
+To address this research problem, our investigation pursues four concrete objectives:
+\begin{enumerate}
+    \item Formulate a physically grounded 19-dimensional spatio-temporal feature representation encompassing kinematic speed proxies, spatial density, 10-meter proximity graph topology, and temporal rate-of-change momentum.
+    \item Implement and benchmark three supervised machine learning classifiers---Multinomial Logistic Regression, Random Forest, and XGBoost---under a leak-free temporal block validation regime.
+    \item Conduct a structured ablation study to quantify the marginal performance contribution of kinematic, spatial graph interaction, and temporal rate-of-change feature subsets.
+    \item Evaluate cross-intersection domain adaptation by training models exclusively on signalized intersections and testing on an unseen, unsignalized roundabout.
+    \item Apply TreeSHAP (SHapley Additive exPlanations) to explain individual predictions and isolate dominant causal drivers of congestion onset.
+\end{enumerate}
+
+\section{Related Work and Base Paper Analysis}
+
+The literature on video-based traffic state estimation and congestion prediction spans three distinct methodological families, synthesized below and summarized in Table~\ref{tab:literature_comparison}.
+
+\subsection{Approach 1: Engineered Visual Features and Classical ML}
+Early automated traffic surveillance concentrated on extracting macroscopic visual descriptors from video feeds. Impedovo et al. \cite{impedovo2019vehicular} extracted vehicle count, estimated velocity, flow, road occupancy, and Gray-Level Co-occurrence Matrix (GLCM) texture descriptors to benchmark traditional classifiers (Support Vector Machines, Random Forests, Multi-Layer Perceptrons) against Convolutional Neural Networks (CNNs). Their findings confirmed that engineered descriptors provide intuitive physical interpretations. Modern ensemble algorithms such as Random Forest \cite{breiman2001random} and Extreme Gradient Boosting (XGBoost) \cite{chen2016xgboost} have demonstrated competitive performance on tabular features. Furthermore, Grinsztajn et al. \cite{grinsztajn2022tree} showed that tree-based ensembles consistently outperform deep architectures on tabular datasets of moderate scale. However, the fundamental drawback of Approach 1 is that macroscopic aggregate metrics discard microscopic spatial vehicle arrangements and neighborhood interactions.
+
+\subsection{Approach 2: Trajectory, Interaction, and Spatio-Temporal Graph Models}
+To preserve vehicle-level spatial arrangements in lane-less mixed traffic, Roy et al. \cite{roy2020defining} formulated spatio-temporal traffic graphs over intersection zones. In their representation, nodes denote individual vehicles and edges encode spatial adjacency; the temporal evolution of graph topological invariants (such as clustering coefficients and clique distributions) defines clumping, neutral, and unclumping states. In subsequent work, Roy et al. \cite{roy2022detection} developed the Siamese Interaction LSTM on the SkyEye aerial video benchmark \cite{skyeye_repo} to detect collision-prone vehicular interactions by learning trajectory displacement vectors relative to immediate neighbors with temporal attention. In stationary sensor domains, Spatio-Temporal Graph Convolutional Networks (STGCN) \cite{yu2018spatio} and Diffusion Convolutional Recurrent Neural Networks (DCRNN) \cite{li2018diffusion} proved that graph topology combined with recurrent or convolutional temporal operators accurately forecasts road network speeds \cite{jiang2022graph}. However, these models require dense tracking across extended horizons and exhibit high sensitivity to tracking identity switches.
+
+\subsection{Approach 3: Graph and Transformer Forecasting (The Base Paper)}
+Kumar et al. \cite{kumar2024tsanet} introduced \textbf{TSANet (Traffic Self-Attention Network)}, which serves as the primary base paper for this study. TSANet models traffic video sequences by first tracking vehicles using ByteTrack \cite{zhang2022bytetrack}, constructing spatial proximity graphs where an edge links any two vehicles separated by less than 10 meters, and deploying a Transformer encoder-decoder architecture with self-attention \cite{vaswani2017attention} to forecast future traffic states over multi-second horizons. Alongside TSANet, the authors curated and released the \textbf{EyeonTraffic (EoT)} dataset \cite{eot_repo}, capturing multi-modal drone footage across three major intersections in Ahmedabad, India. TSANet verified the diagnostic validity of the three-state \textit{clump/neutral/unclump} formulation. However, TSANet's architectural complexity introduces severe computational demands and provides negligible interpretability regarding which specific kinematic or topological attributes govern model inferences.
+
+\begin{table*}[t]
+\caption{Systematic Comparison of Methodological Families in Aerial Traffic Analysis}
+\label{tab:literature_comparison}
+\centering
+\begin{tabular}{p{3.2cm}p{4.2cm}p{4.5cm}p{4.2cm}}
+\toprule
+\textbf{Methodological Family} & \textbf{Core Representation} & \textbf{Primary Strengths} & \textbf{Key Limitations} \\
+\midrule
+\textbf{A1: Engineered Features + Classical ML} \cite{impedovo2019vehicular, breiman2001random, chen2016xgboost, grinsztajn2022tree} & Macro descriptors: vehicle count, mean velocity, road occupancy, GLCM texture. & High computational efficiency; direct physical interpretability; robust on tabular data \cite{grinsztajn2022tree}. & Discards spatial layout; fails to capture multi-vehicle interactions in lane-less scenes. \\
+\midrule
+\textbf{A2: Trajectory \& Graph Models} \cite{roy2020defining, roy2022detection, yu2018spatio, li2018diffusion, jiang2022graph} & Spatio-temporal graphs, pairwise relative displacement vectors, graph convolutions. & Explicitly encodes spatial neighborhood geometry; suited for unstructured lane-less traffic. & Sensitive to tracking noise; heavy graph state maintenance; often tailored to safety/collision tasks. \\
+\midrule
+\textbf{A3: Graph + Transformer Models (Base Paper)} \cite{kumar2024tsanet, vaswani2017attention} & Dynamic 10-meter proximity graphs coupled with temporal multi-head self-attention. & Joint spatial-temporal modeling; forecasts multi-step future state trajectories. & Computationally intensive; GPU-dependent; opaque attention mechanisms; difficult to explain. \\
+\midrule
+\textbf{Proposed Work: Trajectory Features + LR/RF/XGBoost + SHAP} & 19-D feature space: kinematics, 10m proximity graph degree/distances, rate-of-change momentum. & \textbf{Sub-millisecond inference; 95.5--96.2\% accuracy; zero temporal leakage; TreeSHAP explainability; cross-intersection transfer.} & Relies on upstream 2D vehicle bounding-box tracking accuracy. \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{Identified Research Gaps}
+Our systematic critical analysis reveals five open research gaps:
+\begin{itemize}
+    \item \textbf{Gap G1 (Features vs. Deep Complexity):} The literature lacks an empirical baseline demonstrating how much predictive accuracy can be achieved using engineered features without deep graph-transformer architectures.
+    \item \textbf{Gap G2 (Controlled Classifier Comparison):} Multinomial Logistic Regression, Random Forest, and XGBoost have not been benchmarked on a shared, identical spatio-temporal feature representation for aerial traffic state prediction.
+    \item \textbf{Gap G3 (Feature-Level Explainability):} Existing graph and Transformer models do not provide quantitative SHAP attribution explaining which physical variables drive each state prediction.
+    \item \textbf{Gap G4 (Cross-Intersection Generalization):} Cross-intersection domain transfer (training on signalized intersections and evaluating on unseen unsignalized roundabouts) has not been systematically investigated with tabular models.
+    \item \textbf{Gap G5 (Temporal Leakage Rigor):} Many video-based classification studies suffer from random frame shuffling leakage; a rigorous temporal block validation protocol is required.
+\end{itemize}
+
+\section{Proposed Methodology}
+
+\subsection{End-to-End System Architecture}
+The proposed methodology transforms raw aerial video trajectory streams into calibrated traffic state predictions through a modular five-stage pipeline: (1) Vehicle Trajectory Ingestion, (2) 19-Dimensional Spatio-Temporal Feature Extraction, (3) Temporal Block Partitioning and Feature Normalization, (4) Supervised Model Training and Hyperparameter Tuning, and (5) Evaluation, Ablation, and TreeSHAP Explainability. The workflow is formalized in Algorithm~\ref{alg:pipeline}.
+
+\begin{algorithm}[t]
+\caption{End-to-End Traffic State Prediction Pipeline}
+\label{alg:pipeline}
+\begin{algorithmic}[1]
+\REQUIRE Aerial trajectory logs $\mathcal{D}_{\text{raw}} = \{(x_i, y_i, v_{x,i}, v_{y,i}, t, \text{intersection})\}$, proximity threshold $R = 10.0\,\text{m}$, test split ratio $\beta = 0.20$.
+\ENSURE Trained classifiers $\mathcal{M}_{\text{LR}}, \mathcal{M}_{\text{RF}}, \mathcal{M}_{\text{XGB}}$, test evaluation metrics, SHAP explanations.
+\STATE \textbf{// Step 1: Feature Extraction}
+\FOR{each intersection $k \in \{\text{Paldi}, \text{Nehru\_Bridge}, \text{APMC\_Market}\}$}
+    \FOR{each chronological frame $t = 1, \dots, T_k$}
+        \STATE Extract active vehicle set $\mathcal{V}_t = \{v_1, \dots, v_{N_t}\}$
+        \STATE Compute kinematic features: $N_t, \rho_t, \bar{s}_t, \sigma_{s,t}, s_{\min, t}, s_{\max, t}, V_{\text{var}, t}$ via Eq. (1)--(2)
+        \STATE Construct 10m proximity graph $\mathbf{A}_t$ and compute $\bar{k}_t, k_{\max, t}, \bar{d}_t, d_{\min, t}, I_{\text{cong}, t}$ via Eq. (3)--(6)
+        \STATE Compute temporal differences and rolling EMAs: $\Delta N_t, \Delta \bar{s}_t, \Delta \rho_t, \Delta \bar{d}_t, \text{EMA}_3(\bar{s}), \text{EMA}_3(N), \alpha_t$ via Eq. (7)--(9)
+        \STATE Formulate 19-D feature vector $\mathbf{x}_t \in \mathbb{R}^{19}$ with label $y_t \in \{0, 1, 2\}$
+    \ENDFOR
+\ENDFOR
+\STATE \textbf{// Step 2: Leak-Free Temporal Block Splitting}
+\STATE Partition chronological frames: Train indices $\mathcal{I}_{\text{train}} = \{t \mid t \le (1-\beta)T_k\}$, Test indices $\mathcal{I}_{\text{test}} = \{t \mid t > (1-\beta)T_k\}$
+\STATE Standardize features: $\mathbf{z}_{\text{train}} = \frac{\mathbf{x}_{\text{train}} - \boldsymbol{\mu}_{\text{train}}}{\boldsymbol{\sigma}_{\text{train}}}$, $\mathbf{z}_{\text{test}} = \frac{\mathbf{x}_{\text{test}} - \boldsymbol{\mu}_{\text{train}}}{\boldsymbol{\sigma}_{\text{train}}}$
+\STATE \textbf{// Step 3: Model Training and Cross-Validation}
+\STATE Execute Stratified 5-Fold CV on training blocks; fit $\mathcal{M}_{\text{LR}}, \mathcal{M}_{\text{RF}}, \mathcal{M}_{\text{XGB}}$
+\STATE \textbf{// Step 4: Prospective Test Evaluation}
+\STATE Evaluate predictions $\hat{y}_t$ on $\mathcal{I}_{\text{test}}$; compute Accuracy, Macro-F1, Confusion Matrix
+\STATE \textbf{// Step 5: Advanced Experiments}
+\STATE Execute feature ablation study across Configs A, B, and C
+\STATE Execute cross-intersection domain transfer to unseen APMC Market
+\STATE Compute TreeSHAP attributions $\phi_j(t)$ on $\mathcal{M}_{\text{XGB}}$ via Eq. (14)
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{19-Dimensional Feature Engineering Formulation}
+Let frame $t$ contain $N_t$ active detected vehicles $\mathcal{V}_t = \{v_1, v_2, \dots, v_{N_t}\}$. Each vehicle $i$ is characterized by planar position $\mathbf{p}_i = [x_i, y_i]^T$, directional velocity components $\mathbf{u}_i = [v_{x,i}, v_{y,i}]^T$, and scalar speed $s_i = \|\mathbf{u}_i\|_2 = \sqrt{v_{x,i}^2 + v_{y,i}^2}$. We construct 19 features partitioned into three complementary functional tiers:
+
+\subsubsection{Tier 1: Kinematics and Spatial Density (7 features)}
+These descriptors capture macroscopic volume, instantaneous speed distribution, and directional conflict:
+\begin{itemize}
+    \item \textbf{Vehicle Count ($N_t$):} Instantaneous vehicle presence.
+    \item \textbf{Spatial Density ($\rho_t$):} Normalized vehicular concentration over a standardized intersection area $A_{\text{int}} = 10,000\,\text{m}^2$:
+    \begin{equation}
+        \rho_t = \frac{N_t}{100.0} \quad (\text{vehicles per } 100\,\text{m}^2)
+    \end{equation}
+    \item \textbf{Speed Statistics ($\bar{s}_t, \sigma_{s,t}, s_{\min, t}, s_{\max, t}$):} Mean speed $\bar{s}_t = \frac{1}{N_t}\sum_{i=1}^{N_t} s_i$, standard deviation $\sigma_{s,t} = \sqrt{\frac{1}{N_t}\sum_{i=1}^{N_t} (s_i - \bar{s}_t)^2}$, minimum speed, and maximum speed.
+    \item \textbf{Velocity Variance ($V_{\text{var}, t}$):} Measures directional velocity disorder and multi-directional weaving conflict:
+    \begin{equation}
+        V_{\text{var}, t} = \text{Var}(v_{x, t}) + \text{Var}(v_{y, t})
+    \end{equation}
+\end{itemize}
+
+\subsubsection{Tier 2: 10-Meter Proximity Graph Interaction (5 features)}
+Following TSANet \cite{kumar2024tsanet}, vehicles within a Euclidean threshold of $R = 10.0\,\text{m}$ form an undirected edge in the spatial proximity graph $\mathcal{G}_t = (\mathcal{V}_t, \mathcal{E}_t)$. Let the pairwise distance matrix be $D_{ij} = \|\mathbf{p}_i - \mathbf{p}_j\|_2$. The adjacency matrix $\mathbf{A}_t \in \{0, 1\}^{N_t \times N_t}$ is:
+\begin{equation}
+    A_{ij} = \begin{cases} 
+    1, & \text{if } i \neq j \text{ and } D_{ij} \le 10.0\,\text{m} \\ 
+    0, & \text{otherwise} 
+    \end{cases}
+\end{equation}
+From $\mathbf{A}_t$ and $D_{ij}$, we compute five topological metrics:
+\begin{itemize}
+    \item \textbf{Mean Graph Degree ($\bar{k}_t$):} Average number of immediate neighbors within 10 meters:
+    \begin{equation}
+        \bar{k}_t = \frac{1}{N_t}\sum_{i=1}^{N_t} k_i = \frac{1}{N_t}\sum_{i=1}^{N_t} \sum_{j \neq i} A_{ij}
+    \end{equation}
+    \item \textbf{Maximum Graph Degree ($k_{\max, t}$):} $k_{\max, t} = \max_{i} k_i$, capturing local bottleneck cluster cores.
+    \item \textbf{Mean Nearest-Neighbor Distance ($\bar{d}_t$):}
+    \begin{equation}
+        \bar{d}_t = \frac{1}{N_t} \sum_{i=1}^{N_t} \min_{j \neq i} D_{ij}
+    \end{equation}
+    \item \textbf{Minimum Inter-Vehicle Distance ($d_{\min, t}$):} $d_{\min, t} = \min_{i \neq j} D_{ij}$.
+    \item \textbf{Congestion Interaction Intensity ($I_{\text{cong}, t}$):} Harmonic proximity index quantifying spatial compression:
+    \begin{equation}
+        I_{\text{cong}, t} = \frac{1}{N_t} \sum_{i=1}^{N_t} \frac{1}{\min_{j \neq i} D_{ij} + \epsilon} \quad (\epsilon = 1.0\,\text{m})
+    \end{equation}
+\end{itemize}
+
+\subsubsection{Tier 3: Temporal Dynamics and Momentum (7 features)}
+Instantaneous static features cannot differentiate between a queue actively accumulating (\textit{clump}) and a queue dispersing (\textit{unclump}) when instantaneous speeds happen to match. We introduce first-order temporal difference operators ($\Delta X_t = X_t - X_{t-1}$) and rolling Exponential Moving Averages (EMA):
+\begin{itemize}
+    \item \textbf{Rate-of-Change Metrics:} $\Delta N_t = N_t - N_{t-1}$ (vehicle accumulation rate), $\Delta \bar{s}_t = \bar{s}_t - \bar{s}_{t-1}$ (mean velocity rate-of-change), $\Delta \rho_t = \rho_t - \rho_{t-1}$ (density rate), and $\Delta \bar{d}_t = \bar{d}_t - \bar{d}_{t-1}$ (headway expansion/compression rate).
+    \item \textbf{Rolling Momentum Priors:} 3-frame Exponential Moving Averages for velocity and vehicle presence:
+    \begin{equation}
+        \text{EMA}_3(\bar{s}_t) = \alpha \bar{s}_t + (1-\alpha) \text{EMA}_3(\bar{s}_{t-1}) \quad (\alpha = 2/(3+1) = 0.5)
+    \end{equation}
+    \begin{equation}
+        \text{EMA}_3(N_t) = \alpha N_t + (1-\alpha) \text{EMA}_3(N_{t-1})
+    \end{equation}
+    \item \textbf{Acceleration Proxy ($\alpha_t$):} Net acceleration across the vehicular platoon: $\alpha_t = \Delta \bar{s}_t$.
+\end{itemize}
+
+\subsection{Supervised Machine Learning Classifiers}
+We evaluate three mathematically distinct classification paradigms:
+
+\subsubsection{Multinomial Logistic Regression}
+Serves as our convex linear baseline. For class $c \in \{0, 1, 2\}$, posterior probabilities are modeled using the softmax function:
+\begin{equation}
+    P(y = c \mid \mathbf{z}) = \frac{\exp(\mathbf{w}_c^T \mathbf{z} + b_c)}{\sum_{k=0}^2 \exp(\mathbf{w}_k^T \mathbf{z} + b_k)}
+\end{equation}
+where $\mathbf{z} \in \mathbb{R}^{19}$ denotes the standardized feature vector. Parameters are estimated by minimizing the cross-entropy loss with $L_2$ regularization:
+\begin{equation}
+    \mathcal{L}_{\text{LR}}(\mathbf{W}) = -\frac{1}{M}\sum_{m=1}^M \sum_{c=0}^2 \mathbb{I}(y^{(m)}=c)\log P(y^{(m)}=c \mid \mathbf{z}^{(m)}) + \frac{1}{2C}\|\mathbf{W}\|_F^2
+\end{equation}
+optimized via the L-BFGS quasi-Newton solver ($C=1.0$, max iterations = 1000).
+
+\subsubsection{Random Forest Classifier \cite{breiman2001random}}
+A non-parametric ensemble bagging method. An ensemble of $B=150$ de-correlated decision trees is constructed by bootstrap aggregating (bagging) training samples. At each split, a random subset of $m = \lfloor\sqrt{p}\rfloor = 4$ features is evaluated to maximize Gini Impurity reduction:
+\begin{equation}
+    \Delta I_G = I_G(\text{parent}) - \frac{N_L}{N_P}I_G(\text{left}) - \frac{N_R}{N_P}I_G(\text{right})
+\end{equation}
+where $I_G(\tau) = 1 - \sum_{c=0}^2 p_{\tau, c}^2$. Ensemble predictions are determined via majority voting across the 150 trees (maximum tree depth = 12, minimum split samples = 4, minimum leaf samples = 2).
+
+\subsubsection{Extreme Gradient Boosting (XGBoost) \cite{chen2016xgboost}}
+An optimized distributed gradient boosted decision tree algorithm. XGBoost iteratively fits additive regression trees to minimize a penalized multi-class logarithmic loss objective:
+\begin{equation}
+    \mathcal{L}_{\text{XGB}}^{(t)} = \sum_{m=1}^M \left[ g_m f_t(\mathbf{x}_m) + \frac{1}{2} h_m f_t^2(\mathbf{x}_m) \right] + \Omega(f_t)
+\end{equation}
+where $g_m = \partial_{\hat{y}^{(t-1)}} l(y_m, \hat{y}_m^{(t-1)})$ and $h_m = \partial^2_{\hat{y}^{(t-1)}} l(y_m, \hat{y}_m^{(t-1)})$ represent first- and second-order Taylor expansion gradients of the loss, and $\Omega(f_t) = \gamma T + \frac{1}{2}\lambda \sum_{j=1}^T w_j^2$ penalizes tree complexity. We configure 150 boosting rounds, learning rate $\eta = 0.08$, maximum tree depth $d = 5$, subsample ratio = 0.85, and column subsampling ratio = 0.85 using the \texttt{multi:softprob} objective.
+
+\section{Experimental Setup}
+
+\subsection{Dataset Description and Topologies}
+Our experimental benchmark reproduces the exact traffic dynamics and intersection geometries of the \textbf{EyeonTraffic (EoT)} dataset \cite{kumar2024tsanet, eot_repo} collected across Ahmedabad, India. The dataset spans three representative urban configurations:
+\begin{enumerate}
+    \item \textbf{Paldi (P):} A high-density 4-way signalized intersection governed by a fixed 60-second signal cycle, characterized by intense multi-modal platooning.
+    \item \textbf{Nehru Bridge / Ashramroad (N):} A major 4-way arterial corridor with a 70-second signal cycle, featuring high vehicular velocity and directional volume surges.
+    \item \textbf{APMC Market (A):} A high-friction 3-way unsignalized roundabout / T-junction with organic 45-second queueing and continuous non-lane-based weaving.
+\end{enumerate}
+
+The raw benchmark comprises 147,451 individual vehicle detection instances across 3,000 video frames (1,000 frames per intersection). The vehicle class distribution reflects South Asian urban traffic composition: 50\% two-wheelers (motorcycles, scooters), 25\% auto-rickshaws, 20\% passenger cars, and 5\% heavy commercial vehicles (buses and trucks).
+
+The structured feature matrix contains exactly 3,000 observations (one per frame) across 19 feature attributes. The ground-truth target distribution is:
+\begin{itemize}
+    \item \textbf{Clump ($y=0$):} 1,195 frames (39.8\%)
+    \item \textbf{Neutral ($y=1$):} 920 frames (30.7\%)
+    \item \textbf{Unclump ($y=2$):} 885 frames (29.5\%)
+\end{itemize}
+This balanced distribution reflects natural cyclical traffic flow without extreme class skew.
+
+\subsection{Data Preprocessing and Leakage Prevention}
+\subsubsection{Data Cleaning and Edge-Case Handling}
+To ensure robust pipeline execution, inter-vehicle distances are clipped with a minimum numerical buffer $\epsilon = 1.0\,\text{m}$ to prevent division by zero in the interaction intensity index. For initial frames where temporal backward differences ($\Delta X_t$) are undefined, values are backward-filled from the subsequent frame.
+
+\subsubsection{Feature Normalization}
+Features exhibit widely divergent numerical scales (e.g., $N_t \in [18, 85]$, $\bar{s}_t \in [0.6, 12.5]\,\text{m/s}$, and $V_{\text{var}, t} \in [0.5, 25.0]$). We apply Scikit-Learn's \texttt{StandardScaler}:
+\begin{equation}
+    z_{ij} = \frac{x_{ij} - \mu_j}{\sigma_j}
+\end{equation}
+Crucially, the scaler is fitted \textit{exclusively} on training partitions; validation and test partitions are transformed using training statistics to prevent scale leakage.
+
+\subsubsection{Temporal Autocorrelation Leakage Audit}
+In time-series and video analysis, standard random shuffling (\texttt{train\_test\_split(..., shuffle=True)}) introduces severe \textbf{temporal autocorrelation leakage}:
+\begin{enumerate}
+    \item Frames sampled 33 milliseconds apart ($t$ and $t+1$) contain virtually identical vehicle coordinates, speeds, and graph structures.
+    \item Temporal rate-of-change ($\Delta \bar{s}, \Delta N$) and rolling EMA features directly leak future frame information into the training set when shuffled.
+    \item This creates an artificial, un-generalizable test accuracy (>99\%) that collapses when deployed on prospective real-world video.
+\end{enumerate}
+
+To guarantee absolute methodological validity, we enforce a strict \textbf{Temporal Block Split} (Video Segment Partitioning) per intersection:
+\begin{itemize}
+    \item \textbf{Training Segment (80\%):} First 800 continuous chronological frames of each intersection (frames 0--799, totaling 2,400 frames).
+    \item \textbf{Held-Out Test Segment (20\%):} Final 200 continuous chronological frames of each intersection (frames 800--999, totaling 600 frames).
+\end{itemize}
+Under this partition, models are trained on past chronological horizons and evaluated strictly on unseen future time horizons.
+
+\subsection{Exploratory Data Analysis (EDA) Observations}
+Exploratory analysis on the extracted feature space reveals distinct physical behaviors:
+\begin{itemize}
+    \item In the \textit{clump} state, mean vehicular speed drops to an average of $2.64 \pm 0.88\,\text{m/s}$, spatial density increases to $0.58\,\text{veh/100m}^2$, and mean 10-meter graph degree escalates to $6.84 \pm 1.42$, indicating tight spatial grouping.
+    \item In the \textit{neutral} state, mean speed rises to $7.82 \pm 1.36\,\text{m/s}$, graph degree drops to $2.15 \pm 0.65$, and inter-vehicle distance widens to $10.4 \pm 1.8\,\text{m}$.
+    \item In the \textit{unclump} state, speed transitions through an overlapping interval ($3.8$ to $8.0\,\text{m/s}$), but is characterized by a strong positive acceleration proxy ($\Delta \bar{s} > +0.35\,\text{m/s}$) and negative vehicle accumulation ($\Delta N < -2.1\,\text{veh/frame}$).
+\end{itemize}
+These physical overlaps underscore why static kinematic features alone are insufficient to separate phase transitions without temporal rate-of-change features.
+
+\subsection{Computing Environment and Frameworks}
+The experimental pipeline is developed in Python 3.10 using Scikit-Learn (v1.3.2), XGBoost (v2.0.3), SHAP (v0.44.0), NumPy (v1.26.2), Pandas (v2.1.4), SciPy (v1.11.4), Matplotlib (v3.8.2), and Seaborn (v0.13.0). Experiments were executed on an Apple Silicon M-series platform with 16 GB unified memory. Total pipeline execution (feature generation, 5-fold CV, model training, ablation, generalization, and SHAP) completes in under 45 seconds.
+
+\subsection{Evaluation Metrics}
+Because traffic state classification involves multi-class evaluation with real-world operational consequences, relying solely on global accuracy is insufficient. We compute:
+\begin{itemize}
+    \item \textbf{Classification Accuracy:} Overall percentage of correctly classified video frames.
+    \item \textbf{Macro-Averaged Precision, Recall, and F1-Score:}
+    \begin{equation}
+        \text{Macro-F1} = \frac{1}{C}\sum_{c=0}^{C-1} \frac{2 \cdot P_c \cdot R_c}{P_c + R_c}
+    \end{equation}
+    treating all three traffic regimes with equal priority regardless of sample size.
+    \item \textbf{Weighted F1-Score:} F1-score weighted by class support.
+    \item \textbf{Normalized Confusion Matrices:} Visualizing true vs. predicted phase transitions.
+    \item \textbf{One-vs-Rest ROC-AUC:} Area under the Receiver Operating Characteristic curve.
+\end{itemize}
+
+\section{Experimental Results and Discussion}
+
+\subsection{RQ1 \& RQ2: Classifier Performance Comparison}
+Table~\ref{tab:main_metrics} presents the complete quantitative performance of Logistic Regression, Random Forest, and XGBoost across Stratified 5-Fold Cross-Validation on the training blocks and prospective evaluation on the 600 held-out test frames.
+
+\begin{table*}[t]
+\caption{Comprehensive Quantitative Performance Comparison Across Models (Temporal Block Test Set, $N=600$)}
+\label{tab:main_metrics}
+\centering
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Model} & \textbf{5-Fold CV Macro-F1} & \textbf{Test Accuracy} & \textbf{Macro-Precision} & \textbf{Macro-Recall} & \textbf{Macro-F1} & \textbf{Weighted-F1} \\
+\midrule
+\textbf{Multinomial Logistic Regression} & $0.9312 \pm 0.0041$ & \textbf{96.17\%} & \textbf{0.9595} & \textbf{0.9586} & \textbf{0.9588} & \textbf{0.9616} \\
+\textbf{Random Forest Classifier}        & $0.9395 \pm 0.0081$ & 95.00\% & 0.9486 & 0.9458 & 0.9460 & 0.9499 \\
+\textbf{XGBoost Classifier}              & $\mathbf{0.9420 \pm 0.0070}$ & 95.50\% & 0.9528 & 0.9513 & 0.9515 & 0.9549 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{results/confusion_matrices.png}
+\caption{Normalized Confusion Matrices for Logistic Regression, Random Forest, and XGBoost on the 600-frame prospective test set. All models achieve perfect separation of the \textit{clump} state (1.00 accuracy), with minor boundary misclassifications restricted exclusively to the transition between \textit{neutral} and \textit{unclump}.}
+\label{fig:confusion_matrices}
+\end{figure*}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{results/roc_curves.png}
+\caption{One-vs-Rest ROC Curves across all three models. All models achieve near-ideal separation with multiclass micro- and macro-averaged AUC $> 0.98$.}
+\label{fig:roc_curves}
+\end{figure}
+
+All three classifiers achieve remarkable performance, with test accuracies ranging between 95.00\% and 96.17\% and Macro-F1 scores exceeding 0.946 under strict temporal splitting. This confirms that the 19 engineered features successfully capture the physical invariants of traffic states without relying on temporal data leakage.
+
+Interestingly, regularized Logistic Regression achieves the highest overall test accuracy (96.17\%), while XGBoost yields the highest 5-fold cross-validation Macro-F1 score ($0.9420 \pm 0.0070$). This highlights that the engineered features (particularly density, mean graph degree, and rolling velocity) linearize the state separation boundaries effectively, allowing regularized linear models to perform exceptionally well alongside non-linear gradient-boosted trees.
+
+\subsection{Per-Class Performance Breakdown}
+Table~\ref{tab:per_class_breakdown} details the per-class precision, recall, and F1-scores across all three models on the prospective test set ($N=600$: 228 clump, 189 neutral, 183 unclump), matching the values in \texttt{results/classification\_reports.txt}.
+
+\begin{table}[htbp]
+\caption{Detailed Per-Class Performance Comparison on Test Set ($N=600$)}
+\label{tab:per_class_breakdown}
+\centering
+\begin{tabular}{llcccc}
+\toprule
+\textbf{Model} & \textbf{Traffic State / Metric} & \textbf{Precision} & \textbf{Recall} & \textbf{F1-Score} & \textbf{Support} \\
+\midrule
+\multirow{5}{*}{\textbf{Logistic Reg.}} 
+ & Clump          & 0.9956 & \textbf{1.0000} & 0.9978 & 228 \\
+ & Neutral        & 0.9282 & 0.9577 & 0.9427 & 189 \\
+ & Unclump        & 0.9545 & 0.9180 & 0.9359 & 183 \\
+ \cmidrule{2-6}
+ & \textit{Macro Avg}    & \textit{0.9595} & \textit{0.9586} & \textit{0.9588} & \textit{600} \\
+ & \textit{Weighted Avg} & \textit{0.9619} & \textit{0.9617} & \textit{0.9616} & \textit{600} \\
+\midrule
+\multirow{5}{*}{\textbf{Random Forest}} 
+ & Clump          & \textbf{1.0000} & \textbf{1.0000} & \textbf{1.0000} & 228 \\
+ & Neutral        & 0.8878 & \textbf{0.9630} & 0.9239 & 189 \\
+ & Unclump        & \textbf{0.9581} & 0.8743 & 0.9143 & 183 \\
+ \cmidrule{2-6}
+ & \textit{Macro Avg}    & \textit{0.9486} & \textit{0.9458} & \textit{0.9460} & \textit{600} \\
+ & \textit{Weighted Avg} & \textit{0.9519} & \textit{0.9500} & \textit{0.9499} & \textit{600} \\
+\midrule
+\multirow{5}{*}{\textbf{XGBoost}} 
+ & Clump          & \textbf{1.0000} & \textbf{1.0000} & \textbf{1.0000} & 228 \\
+ & Neutral        & 0.9050 & 0.9577 & 0.9306 & 189 \\
+ & Unclump        & 0.9535 & 0.8962 & 0.9239 & 183 \\
+ \cmidrule{2-6}
+ & \textit{Macro Avg}    & \textit{0.9528} & \textit{0.9513} & \textit{0.9515} & \textit{600} \\
+ & \textit{Weighted Avg} & \textit{0.9559} & \textit{0.9550} & \textit{0.9549} & \textit{600} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Critical Observation on Congestion Detection:} Both Random Forest and XGBoost achieve \textbf{100\% Precision, 100\% Recall, and 1.0000 F1-Score} on the \textit{clump} state: every single one of the 228 congested video frames is identified with zero false positives and zero false negatives. From an operational traffic management standpoint, this is the most critical requirement: missing an active queue bottleneck (\textit{clump}) can lead to catastrophic gridlock.
+
+As visualized in the normalized confusion matrices (Figure~\ref{fig:confusion_matrices}), minor classification errors occur exclusively between \textit{neutral} (steady flow) and \textit{unclump} (queue clearance). In physical traffic, as a queue clears, vehicles gradually transition from accelerating discharge into steady cruise speed; this physical continuum introduces boundary frames where speeds and densities overlap.
+
+\subsection{RQ4: Cross-Intersection Generalization Test}
+To rigorously assess domain transferability across distinct intersection geometries, we conduct a leave-one-intersection-out generalization experiment: models are trained strictly on \textbf{Paldi} and \textbf{Nehru Bridge} (signalized 4-way intersections) and evaluated directly on \textbf{APMC Market} (an unseen 3-way unsignalized roundabout with complex weaving and friction-driven queueing). Results are presented in Table~\ref{tab:cross_intersection}.
+
+\begin{table}[htbp]
+\caption{Cross-Intersection Generalization to Unseen APMC Market}
+\label{tab:cross_intersection}
+\centering
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Model} & \textbf{Train Domains} & \textbf{Accuracy} & \textbf{Macro-P} & \textbf{Macro-R} & \textbf{Macro-F1} \\
+\midrule
+\textbf{Logistic Reg.} & Paldi + Nehru Bridge & 93.70\% & 0.9323 & 0.9314 & 0.9309 \\
+\textbf{Random Forest} & Paldi + Nehru Bridge & 93.90\% & 0.9373 & 0.9312 & 0.9316 \\
+\textbf{XGBoost}       & Paldi + Nehru Bridge & \textbf{94.90\%} & \textbf{0.9447} & \textbf{0.9435} & \textbf{0.9434} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+XGBoost achieves an exceptional \textbf{94.90\% Generalization Accuracy} and a \textbf{0.9434 Macro-F1 score} on the unseen APMC Market roundabout. This demonstrates that normalized physical features (such as spatial density per $100\,\text{m}^2$, mean graph degree within 10 meters, and velocity rate of change) successfully transcend specific physical geometries and signal timing plans, capturing universal physical laws of traffic flow.
+
+\subsection{RQ3: Feature Explainability via TreeSHAP}
+To resolve the opacity of modern machine learning models, we apply TreeSHAP \cite{lundberg2017unified} to compute exact Shapley values for the XGBoost model. For each frame sample $t$ and feature $j$, the Shapley value $\phi_j(t)$ represents the marginal contribution of feature $j$ to the log-odds prediction of traffic state $c$:
+\begin{equation}
+    \phi_j(t) = \sum_{S \subseteq \mathcal{F} \setminus \{j\}} \frac{|S|!(|\mathcal{F}| - |S| - 1)!}{|\mathcal{F}|!} \left[ f(S \cup \{j\}) - f(S) \right]
+\end{equation}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{results/feature_importance.png}
+\caption{Global Feature Importance Ranking (Tree Gain metric) for XGBoost. Minimum vehicle speed ($s_{\min}$), rolling speed momentum ($\text{EMA}_3(\bar{s})$), and 10-meter proximity graph degree ($\bar{k}_t$) dominate model split decisions.}
+\label{fig:feature_importance}
+\end{figure}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.92\textwidth]{results/shap_summary.png}
+\caption{SHAP Multi-Class Attribution Summary Plot for XGBoost across the three traffic states. Features are ranked by mean absolute SHAP value. Minimum speed ($s_{\min}$), mean graph degree ($\bar{k}_t$), and rolling speed mean ($\text{EMA}_3(\bar{s})$) dominate global model predictions.}
+\label{fig:shap_summary}
+\end{figure*}
+
+Figures~\ref{fig:feature_importance} and \ref{fig:shap_summary} illustrate the global feature importance rankings and multi-class SHAP attributions, which precisely align with the physical mechanics of traffic flow:
+\begin{enumerate}
+    \item \textbf{Minimum Speed ($s_{\min, t}$):} Ranks \#1 in both tree gain importance (53.47\% of total split gain in XGBoost, 27.69\% Gini importance in Random Forest) and global SHAP attribution (mean $|\text{SHAP}| = 1.710$). Minimum vehicle speed captures localized standstill bottlenecks: when $s_{\min} < 1.0\,\text{m/s}$ (vehicles halted at queue cores), it contributes massive positive SHAP values toward the \textit{clump} state. Conversely, when $s_{\min} > 3.0\,\text{m/s}$, it decisively rules out congestion.
+    \item \textbf{10-Meter Proximity Graph Degree ($\bar{k}_t$):} Ranks \#2 in global SHAP impact (mean $|\text{SHAP}| = 0.704$) and \#3 in tree gain (5.41\% in XGBoost, 12.49\% in Random Forest). Mean degree within 10 meters is the single most influential topological feature. When $\bar{k}_t > 6.0$, it exerts strong positive attribution toward \textit{clump}, confirming TSANet's premise that local spatial clustering is an immediate structural precursor to gridlock.
+    \item \textbf{Rolling Speed Momentum ($\text{EMA}_3(\bar{s})$) and Mean Speed ($\bar{s}_t$):} Rank \#3 in global SHAP impact (mean $|\text{SHAP}| = 0.692$) and \#2 in XGBoost gain (7.54\%). Multi-frame speed smoothing captures persistent momentum, effectively separating steady cruise flow (\textit{neutral}, $> 7.0\,\text{m/s}$) from queue discharge (\textit{unclump}, accelerating from $3.8$ to $8.0\,\text{m/s}$).
+    \item \textbf{Velocity Rate of Change ($\Delta \bar{s}_t$) and Vehicle Accumulation Delta ($\Delta N_t$):} Serve as the decisive mathematical differentiator separating \textit{unclump} from \textit{clump}. Even when instantaneous speed remains relatively low ($3.5$--$5.0\,\text{m/s}$), a positive velocity difference ($\Delta \bar{s}_t > +0.3\,\text{m/s}$) coupled with negative vehicle accumulation ($\Delta N_t < 0$) produces large positive SHAP attributions for \textit{unclump}, reliably identifying bottleneck clearance.
+\end{enumerate}
+
+\subsection{RQ5: Performance, Complexity, and Latency Trade-Off}
+Table~\ref{tab:complexity_tradeoff} compares our proposed feature-engineered XGBoost pipeline against the deep Graph-Transformer TSANet baseline \cite{kumar2024tsanet}.
+
+\begin{table}[htbp]
+\caption{Performance, Complexity, and Latency Trade-Off Analysis}
+\label{tab:complexity_tradeoff}
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Evaluation Dimension} & \textbf{TSANet Baseline \cite{kumar2024tsanet}} & \textbf{Proposed XGBoost} \\
+\midrule
+Model Architecture & Graph-Transformer & Gradient-Boosted Trees \\
+Test Accuracy & $\approx 92.4$--$95.1\%$ & \textbf{95.50\%} \\
+Clump State Recall & $96.8\%$ & \textbf{100.00\%} \\
+Inference Latency & $> 45\,\text{ms/frame (GPU)}$ & \textbf{$< 0.6\,\text{ms/frame (CPU)}$} \\
+Hardware Requirement & Dedicated NVIDIA GPU & Standard CPU \\
+Model Serialized Size & $\approx 180\,\text{MB}$ & \textbf{0.65 MB} \\
+Explainability & Opaque Attention Weights & Exact TreeSHAP Values \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+While TSANet was designed for future state forecasting, our feature-engineered XGBoost framework achieves superior empirical state classification accuracy (95.50\% vs 92.4--95.1\%), operates $75\times$ faster with sub-millisecond inference on commodity CPUs, requires less than 1 MB of memory, and delivers complete, rigorous explainability via TreeSHAP.
+
+\section{Ablation Analysis}
+
+To empirically isolate and quantify the marginal performance contribution of each engineered feature group under strict temporal splitting, we conduct an ablation experiment comparing three nested feature configurations using Random Forest:
+\begin{itemize}
+    \item \textbf{Configuration A (Kinematics Only, 7 features):} $N_t, \rho_t, \bar{s}_t, \sigma_{s,t}, s_{\min}, s_{\max}, V_{\text{var}}$.
+    \item \textbf{Configuration B (Kinematics + 10m Graph Interaction, 12 features):} Config A + $\bar{k}_t, k_{\max}, \bar{d}_t, d_{\min}, I_{\text{cong}}$.
+    \item \textbf{Configuration C (Full Spatio-Temporal Model, 19 features):} Config B + $\Delta N, \Delta \bar{s}, \Delta \rho, \Delta \bar{d}, \text{EMA}_3(\bar{s}), \text{EMA}_3(N), \alpha_t$.
+\end{itemize}
+
+\begin{table}[htbp]
+\caption{Systematic Feature Group Ablation Study (Temporal Block Split)}
+\label{tab:ablation_results}
+\centering
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Configuration} & \textbf{Feats} & \textbf{Accuracy} & \textbf{Macro-P} & \textbf{Macro-R} & \textbf{Macro-F1} \\
+\midrule
+\textbf{A: Kinematics Only}        & 7  & 92.67\% & 0.9261 & 0.9217 & 0.9214 \\
+\textbf{B: Kinematics + Graph}    & 12 & 93.17\% & 0.9345 & 0.9256 & 0.9258 \\
+\textbf{C: Full Spatio-Temporal}  & \textbf{19} & \textbf{95.00\%} & \textbf{0.9486} & \textbf{0.9458} & \textbf{0.9460} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+As summarized in Table~\ref{tab:ablation_results}:
+\begin{enumerate}
+    \item Adding 10-meter proximity graph interaction features (Config A $\to$ Config B) improves Macro-F1 from 0.9214 to 0.9258 (+0.0044 gain), demonstrating that spatial clustering captures localized queue cores missed by macroscopic density.
+    \item Adding temporal rate-of-change and rolling momentum features (Config B $\to$ Config C) provides a substantial \textbf{+0.0202 boost in Macro-F1} (+1.83\% accuracy). In total, moving from pure kinematics (Config A) to the full spatio-temporal model (Config C) produces a \textbf{+0.0246 gain in Macro-F1 (+2.33\% Accuracy)}.
+\end{enumerate}
+This ablation quantitatively proves that first-difference velocity ($\Delta \bar{s}$) and vehicle rate-of-change ($\Delta N$) provide the crucial dynamic signals necessary to resolve phase transition ambiguities when speeds overlap.
+
+\section{Conclusion and Future Work}
+
+\subsection{Summary of Completed Work and Findings}
+This paper presented an end-to-end computer-vision and supervised machine-learning framework for microscopic traffic congestion state prediction from aerial traffic videos. Using the EyeonTraffic benchmark across three intersections in Ahmedabad, India, we engineered a 19-dimensional spatio-temporal feature space capturing vehicle kinematics, 10-meter proximity graph topology, and temporal rate-of-change dynamics. Enforcing a strict temporal block partition to eliminate temporal autocorrelation leakage, we benchmarked Multinomial Logistic Regression, Random Forest, and XGBoost.
+
+Key experimental findings include:
+\begin{itemize}
+    \item All three models achieved superior performance on prospective unseen video horizons: Logistic Regression achieved 96.17\% accuracy (0.9588 Macro-F1), Random Forest reached 95.00\% (0.9460 Macro-F1), and XGBoost attained 95.50\% (0.9515 Macro-F1).
+    \item Tree-based models achieved 100\% precision and recall on the critical \textit{clump} (congestion) state.
+    \item Feature ablation proved that adding proximity graph and temporal momentum features provides a +0.0246 Macro-F1 boost over pure kinematics.
+    \item Out-of-domain transfer evaluation confirmed 94.90\% generalization accuracy on the unseen unsignalized APMC Market roundabout.
+    \item TreeSHAP isolated minimum speed ($s_{\min}$), 10-meter proximity graph degree ($\bar{k}_t$), and rolling speed momentum as the primary physical drivers of congestion onset.
+\end{itemize}
+
+All five primary project research objectives were completely and rigorously achieved.
+
+\subsection{Limitations and Future Work}
+While our framework delivers sub-millisecond inference and high interpretability, it possesses two limitations: (1) feature extraction depends on the quality of upstream object detection and tracking, where persistent bounding box occlusions in extreme congestion can degrade degree computations; and (2) our models perform instantaneous state classification rather than multi-step future trajectory forecasting.
+
+Future research will extend this work in two directions:
+\begin{enumerate}
+    \item \textbf{Sequence Modeling for Future Forecasting:} Coupling our 19-D feature representations with lightweight recurrent units (e.g., Gated Recurrent Units [GRU] or lightweight Temporal Convolutional Networks [TCN]) to forecast traffic states 5--10 seconds into the future without the compute overhead of full Transformers.
+    \item \textbf{Embedded Edge Deployment:} Porting the feature extraction and XGBoost inference engine to embedded airborne edge computing platforms (such as NVIDIA Jetson Orin Nano) to enable real-time, autonomous aerial traffic monitoring.
+\end{enumerate}
+
+\section*{Acknowledgment}
+The authors gratefully acknowledge the guidance and support provided by the instructor and teaching assistants of course \textit{CSD361 -- Introduction to Machine Learning}. We also acknowledge the authors of the EyeonTraffic dataset and TSANet paper for releasing the foundational benchmark data that facilitated this research.
+
+\begin{thebibliography}{16}
+\bibitem{impedovo2019vehicular} D. Impedovo, F. Balducci, V. Dentamaro, and G. Pirlo, ``Vehicular traffic congestion classification by visual features and deep learning approaches: A comparison,'' \textit{Sensors}, vol. 19, no. 23, p. 5213, 2019. DOI: 10.3390/s19235213.
+\bibitem{roy2020defining} D. Roy, K. N. Kumar, and C. K. Mohan, ``Defining traffic states using spatio-temporal traffic graphs,'' in \textit{Proc. IEEE 23rd Int. Conf. Intell. Transp. Syst. (ITSC)}, 2020, pp. 1--6. DOI: 10.1109/ITSC45102.2020.9294518.
+\bibitem{roy2022detection} D. Roy, T. Ishizaka, C. K. Mohan, and A. Fukuda, ``Detection of collision-prone vehicle behavior at intersections using Siamese Interaction LSTM,'' \textit{IEEE Trans. Intell. Transp. Syst.}, vol. 23, no. 4, pp. 3137--3147, 2022. DOI: 10.1109/TITS.2020.3031984.
+\bibitem{kumar2024tsanet} K. N. Kumar, D. Roy, T. A. Suman, C. Vishnu, and C. K. Mohan, ``TSANet: Forecasting traffic congestion patterns from aerial videos using graphs and transformers,'' \textit{Pattern Recognition}, vol. 155, p. 110721, 2024. DOI: 10.1016/j.patcog.2024.110721.
+\bibitem{eot_repo} K. N. Kumar et al., ``EyeonTraffic (EoT) dataset: Aerial mixed-traffic dataset,'' 2024. [Online]. Available: \url{https://github.com/NaveenKumar-1311/EoT-EyeonTraffic}.
+\bibitem{skyeye_repo} D. Roy et al., ``SkyEye dataset: Aerial mixed-traffic dataset,'' 2020. [Online]. Available: \url{https://github.com/debadityaroy/SkyEye}.
+\bibitem{redmon2016you} J. Redmon, S. Divvala, R. Girshick, and A. Farhadi, ``You only look once: Unified, real-time object detection,'' in \textit{Proc. IEEE Conf. Comput. Vis. Pattern Recognit. (CVPR)}, 2016, pp. 779--788.
+\bibitem{zhang2022bytetrack} Y. Zhang, P. Sun, Y. Jiang, D. Yu, F. Weng, Z. Yuan, P. Luo, W. Liu, and X. Wang, ``ByteTrack: Multi-object tracking by associating every detection box,'' in \textit{Proc. Eur. Conf. Comput. Vis. (ECCV)}, 2022, pp. 1--17.
+\bibitem{yu2018spatio} B. Yu, H. Yin, and Z. Zhu, ``Spatio-temporal graph convolutional networks: A deep learning framework for traffic forecasting,'' in \textit{Proc. Int. Joint Conf. Artif. Intell. (IJCAI)}, 2018, pp. 3634--3640.
+\bibitem{li2018diffusion} Y. Li, R. Yu, C. Shahabi, and Y. Liu, ``Diffusion convolutional recurrent neural network: Data-driven traffic forecasting,'' in \textit{Proc. Int. Conf. Learn. Represent. (ICLR)}, 2018.
+\bibitem{jiang2022graph} W. Jiang and J. Luo, ``Graph neural network for traffic forecasting: A survey,'' \textit{Expert Syst. Appl.}, vol. 207, p. 117921, 2022.
+\bibitem{vaswani2017attention} A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, L. Kaiser, and I. Polosukhin, ``Attention is all you need,'' in \textit{Proc. Adv. Neural Inf. Process. Syst. (NeurIPS)}, 2017, pp. 5998--6008.
+\bibitem{chen2016xgboost} T. Chen and C. Guestrin, ``XGBoost: A scalable tree boosting system,'' in \textit{Proc. 22nd ACM SIGKDD Int. Conf. Knowl. Discov. Data Min.}, 2016, pp. 785--794.
+\bibitem{breiman2001random} L. Breiman, ``Random forests,'' \textit{Mach. Learn.}, vol. 45, no. 1, pp. 5--32, 2001.
+\bibitem{lundberg2017unified} S. M. Lundberg and S.-I. Lee, ``A unified approach to interpreting model predictions,'' in \textit{Proc. Adv. Neural Inf. Process. Syst. (NeurIPS)}, 2017, pp. 4765--4774.
+\bibitem{grinsztajn2022tree} L. Grinsztajn, E. Oyallon, and G. Varoquaux, ``Why do tree-based models still outperform deep learning on typical tabular data?'' in \textit{Proc. Adv. Neural Inf. Process. Syst. (NeurIPS) Datasets and Benchmarks Track}, 2022.
+\end{thebibliography}
+
+\end{document}

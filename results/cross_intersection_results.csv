@@ -1,0 +1,4 @@
+Model,Train_Domains,Test_Domain,Generalization_Accuracy,Macro_Precision,Macro_Recall,Macro_F1
+Logistic Regression,Paldi+Nehru_Bridge,APMC_Market,0.99,0.989517819706499,0.9883449883449883,0.9887439882664605
+Random Forest,Paldi+Nehru_Bridge,APMC_Market,0.958,0.96,0.9510489510489512,0.9523083099156965
+XGBoost,Paldi+Nehru_Bridge,APMC_Market,0.99,0.9897172767835228,0.9883449883449883,0.9888587977979424

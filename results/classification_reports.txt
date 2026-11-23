@@ -1,0 +1,33 @@
+================ Logistic Regression ================
+              precision    recall  f1-score   support
+
+       clump     1.0000    1.0000    1.0000       239
+     neutral     0.9840    1.0000    0.9919       184
+     unclump     1.0000    0.9831    0.9915       177
+
+    accuracy                         0.9950       600
+   macro avg     0.9947    0.9944    0.9945       600
+weighted avg     0.9951    0.9950    0.9950       600
+
+================ Random Forest ================
+              precision    recall  f1-score   support
+
+       clump     1.0000    1.0000    1.0000       239
+     neutral     0.9946    1.0000    0.9973       184
+     unclump     1.0000    0.9944    0.9972       177
+
+    accuracy                         0.9983       600
+   macro avg     0.9982    0.9981    0.9982       600
+weighted avg     0.9983    0.9983    0.9983       600
+
+================ XGBoost ================
+              precision    recall  f1-score   support
+
+       clump     1.0000    1.0000    1.0000       239
+     neutral     0.9946    1.0000    0.9973       184
+     unclump     1.0000    0.9944    0.9972       177
+
+    accuracy                         0.9983       600
+   macro avg     0.9982    0.9981    0.9982       600
+weighted avg     0.9983    0.9983    0.9983       600
+
