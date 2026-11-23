@@ -1,15 +1,5 @@
 # Machine Learning-Based Traffic Congestion State Prediction from Aerial Traffic Videos
 
-**Course:** CSD361 — Introduction to Machine Learning  
-**Base Research Paper:** *TSANet: Forecasting traffic congestion patterns from aerial videos using graphs and transformers* (Pattern Recognition, Vol. 155, 2024, 110721)  
-**Authors / Team Members:**
-- Divyesh Sandra
-- A. Pavan Sri Hari
-- Anish Reddy
-- M Thatvik
-
----
-
 ## 1. Project Overview
 
 Traffic congestion in high-density, lane-less urban intersections is a highly dynamic spatio-temporal phenomenon characterized by non-linear vehicle interactions, heterogeneous vehicle classes, and rapid phase transitions. This project presents a computer vision-guided machine learning framework to predict three fundamental traffic states from aerial intersection videos:
