@@ -1,15 +1,5 @@
 # Machine Learning-Based Traffic Congestion State Prediction from Aerial Traffic Videos
 
-**Course:** CSD361 – Introduction to Machine Learning  
-**Final Submission Report (IEEE Conference Format Compliant)**  
-**Deadline:** 15th November, 2026, 11:59 PM  
-
-### Author Information
-- **Divyesh Sandra** (Roll No: [Student Roll No 1]) — *Department of Computer Science and Engineering* (divyesh.sandra@institution.edu)
-- **A. Pavan Sri Hari** (Roll No: [Student Roll No 2]) — *Department of Computer Science and Engineering* (pavan.srihari@institution.edu)
-- **Anish Reddy M** (Roll No: [Student Roll No 3]) — *Department of Computer Science and Engineering* (anish.reddy@institution.edu)
-- **Thatvik** (Roll No: [Student Roll No 4]) — *Department of Computer Science and Engineering* (thatvik@institution.edu)
-
 **Base Research Paper:**  
 K. Naveen Kumar, Debaditya Roy, Thakur Ashutosh Suman, Chalavadi Vishnu, and C. Krishna Mohan (2024). *TSANet: Forecasting traffic congestion patterns from aerial videos using graphs and transformers*. Pattern Recognition, Vol. 155, p. 110721. DOI: [10.1016/j.patcog.2024.110721](https://doi.org/10.1016/j.patcog.2024.110721).
 
